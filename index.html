@@ -11,7 +11,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
     import {
         getFirestore, collection, doc, setDoc, getDoc, getDocs,
-        deleteDoc, query, where, orderBy, updateDoc, arrayUnion, arrayRemove, addDoc
+        deleteDoc, query, where, updateDoc, arrayUnion, arrayRemove
     } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
 
     // ============================================================
@@ -79,29 +79,40 @@
         // TRABAJOS - SIN orderBy para evitar índices compuestos
         async getJobs(username) {
             try {
+                log('📥 getJobs para:', username);
                 const q = query(collection(db, 'jobs'), where('username', '==', username));
                 const snap = await getDocs(q);
                 const jobs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                // Ordenar manualmente por timestamp
                 jobs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-                log(`✅ Trabajos cargados para ${username}:`, jobs.length);
+                log('✅ getJobs retornó:', jobs.length, 'trabajos');
                 return jobs;
             } catch (e) {
-                error(`❌ Error al cargar trabajos de ${username}:`, e);
+                error('❌ Error en getJobs:', e);
                 return [];
             }
         },
         
+        // ADMIN - Trae TODOS los trabajos de TODOS los usuarios
         async getAllJobs() {
             try {
-                const snap = await getDocs(collection(db, 'jobs'));
-                const jobs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                // Ordenar manualmente por timestamp
+                log('🔍 getAllJobs - Consultando TODA la colección jobs...');
+                const jobsCollection = collection(db, 'jobs');
+                const snap = await getDocs(jobsCollection);
+                
+                log('📦 Documentos encontrados en Firestore:', snap.size);
+                
+                const jobs = snap.docs.map(d => {
+                    const data = d.data();
+                    return { id: d.id, ...data };
+                });
+                
+                // Ordenar manualmente por timestamp (más reciente primero)
                 jobs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-                log('✅ Todos los trabajos cargados (admin):', jobs.length);
+                
+                log('✅ getAllJobs retornó:', jobs.length, 'trabajos de todos los usuarios');
                 return jobs;
             } catch (e) {
-                error('❌ Error al cargar todos los trabajos:', e);
+                error('❌ Error en getAllJobs:', e);
                 return [];
             }
         },
@@ -151,7 +162,6 @@
                     log('✅ Lista de personal cargada:', nombres);
                     return nombres;
                 }
-                // Crear por defecto
                 await setDoc(ref, { nombres: ['Hugo', 'Anderson', 'Richard'] });
                 return ['Hugo', 'Anderson', 'Richard'];
             } catch (e) {
@@ -215,25 +225,35 @@
         const load = async (username, isAdmin = false) => {
             currentUser = username;
             currentIsAdmin = isAdmin;
-            log('Cargando trabajos para:', username, 'Admin:', isAdmin);
+            log('📥 Cargando trabajos - Usuario:', username, 'Admin:', isAdmin);
             
             try {
                 if (isAdmin) {
-                    log('Modo ADMIN: cargando TODOS los trabajos');
-                    trabajos = await DB.getAllJobs();
+                    log('🔐 MODO ADMIN: Cargando TODOS los trabajos de TODOS los usuarios');
+                    const allJobs = await DB.getAllJobs();
+                    log('📊 Total de trabajos obtenidos:', allJobs.length);
+                    
+                    trabajos = allJobs.map(t => ({
+                        cliente:     t.cliente || '',
+                        tipoTrabajo: t.tipoTrabajo || 'Otros Servicios',
+                        personal:    t.personal || 'Sin asignar',
+                        username:    t.username || 'unknown',
+                        ...t
+                    }));
+                    
+                    log('✅ Admin cargó', trabajos.length, 'trabajos de todos los usuarios');
                 } else {
-                    log('Modo USUARIO: cargando trabajos propios');
-                    trabajos = await DB.getJobs(username);
+                    log('👤 MODO USUARIO: Cargando trabajos propios');
+                    const userJobs = await DB.getJobs(username);
+                    trabajos = userJobs.map(t => ({
+                        cliente:     t.cliente || '',
+                        tipoTrabajo: t.tipoTrabajo || 'Otros Servicios',
+                        personal:    t.personal || 'Sin asignar',
+                        username:    t.username || username,
+                        ...t
+                    }));
+                    log('✅ Usuario cargó', trabajos.length, 'trabajos propios');
                 }
-                
-                trabajos.forEach(t => {
-                    t.cliente     = t.cliente     || '';
-                    t.tipoTrabajo = t.tipoTrabajo || 'Otros Servicios';
-                    t.personal    = t.personal    || 'Sin asignar';
-                    t.username    = t.username    || username;
-                });
-                
-                log(`✅ ${trabajos.length} trabajos cargados en memoria`);
             } catch(e) { 
                 error('❌ Error en load:', e); 
                 trabajos = []; 
@@ -445,10 +465,15 @@
     // ============================================================
     const JobView = (() => {
         const renderSummary = (s, showGanancia = true) => {
-            document.getElementById('total-trabajos').textContent = s.totalTrabajos;
-            document.getElementById('total-ingresos').textContent = s.totalIngresos;
-            document.getElementById('total-ganancia').textContent = showGanancia ? s.totalGanancia : 'N/A';
-            document.getElementById('estado-pagos').textContent   = s.estadoPagos;
+            const elTotal = document.getElementById('total-trabajos');
+            const elIngresos = document.getElementById('total-ingresos');
+            const elGanancia = document.getElementById('total-ganancia');
+            const elEstado = document.getElementById('estado-pagos');
+            
+            if (elTotal) elTotal.textContent = s.totalTrabajos;
+            if (elIngresos) elIngresos.textContent = s.totalIngresos;
+            if (elGanancia) elGanancia.textContent = showGanancia ? s.totalGanancia : 'N/A';
+            if (elEstado) elEstado.textContent = s.estadoPagos;
             
             const labelGanancia = document.querySelector('.summary-card:nth-child(3) h3');
             if (labelGanancia) {
@@ -509,7 +534,7 @@
                 return;
             }
             
-            log(`Renderizando ${dias.length} días con trabajos`);
+            log(`🎨 Renderizando ${dias.length} días con trabajos`);
             
             dias.forEach(dia => {
                 const lista = porDia[dia];
@@ -590,7 +615,8 @@
             const el = document.getElementById('notification');
             if (!el) return;
             el.style.background = isError ? 'var(--color-error)' : 'var(--color-success)';
-            document.getElementById('notificationText').textContent = msg;
+            const textEl = document.getElementById('notificationText');
+            if (textEl) textEl.textContent = msg;
             el.style.display = 'block';
             setTimeout(() => { el.style.display = 'none'; }, 3000);
         };
@@ -625,13 +651,17 @@
         };
 
         const hideAuthModal = () => {
-            document.getElementById('authModal').classList.remove('active');
-            document.getElementById('main-app-container').classList.add('show');
+            const modal = document.getElementById('authModal');
+            const container = document.getElementById('main-app-container');
+            if (modal) modal.classList.remove('active');
+            if (container) container.classList.add('show');
         };
         
         const showAuthModal = (error = false) => {
-            document.getElementById('authModal').classList.add('active');
-            document.getElementById('authError').textContent = error ? 'Usuario o contraseña incorrectos.' : '';
+            const modal = document.getElementById('authModal');
+            const errorEl = document.getElementById('authError');
+            if (modal) modal.classList.add('active');
+            if (errorEl) errorEl.textContent = error ? 'Usuario o contraseña incorrectos.' : '';
         };
         
         const renderCurrentUserName = (name) => { 
@@ -668,9 +698,16 @@
         };
 
         const handleLogin = async () => {
-            const user = document.getElementById('userInput').value.trim().toLowerCase();
-            const pass = document.getElementById('passwordInput').value.trim();
-            document.getElementById('authError').textContent = '';
+            const userInput = document.getElementById('userInput');
+            const passInput = document.getElementById('passwordInput');
+            const errorEl = document.getElementById('authError');
+            
+            if (!userInput || !passInput) return;
+            
+            const user = userInput.value.trim().toLowerCase();
+            const pass = passInput.value.trim();
+            
+            if (errorEl) errorEl.textContent = '';
             showLoading(true);
             
             try {
@@ -686,7 +723,6 @@
                     JobView.hideAuthModal();
                     JobView.renderCurrentUserName(found.username);
                     
-                    // Controlar visibilidad de botones según rol
                     const adminBtn = document.getElementById('admin-btn');
                     const personalBtn = document.getElementById('section-personal');
                     
@@ -711,23 +747,30 @@
                 }
             } catch(e) {
                 error('❌ Error en login:', e);
-                document.getElementById('authError').textContent = 'Error de conexión con Firebase.';
+                if (errorEl) errorEl.textContent = 'Error de conexión con Firebase.';
             } finally { 
                 showLoading(false); 
             }
         };
 
         const createNewUser = async () => {
-            const user  = document.getElementById('newUserInput').value.trim().toLowerCase();
-            const pass  = document.getElementById('newPasswordInput').value.trim();
+            const newUserInput = document.getElementById('newUserInput');
+            const newPassInput = document.getElementById('newPasswordInput');
             const errEl = document.getElementById('userCreationError');
+            
+            if (!newUserInput || !newPassInput || !errEl) return;
+            
+            const user = newUserInput.value.trim().toLowerCase();
+            const pass = newPassInput.value.trim();
+            
             if (!user || !pass) { errEl.textContent = 'Usuario y contraseña requeridos.'; return; }
             if (userList.some(u => u.username === user)) { errEl.textContent = 'El usuario ya existe.'; return; }
+            
             await DB.saveUser({ username: user, password: pass, isAdmin: false });
             await loadUsers();
             JobView.renderUserList(userList);
-            document.getElementById('newUserInput').value = '';
-            document.getElementById('newPasswordInput').value = '';
+            newUserInput.value = '';
+            newPassInput.value = '';
             errEl.style.color = 'var(--color-success)';
             errEl.textContent = 'Perfil creado exitosamente.';
             setTimeout(() => { errEl.textContent = ''; errEl.style.color = 'var(--color-error)'; }, 3000);
@@ -749,13 +792,17 @@
         const showUserManagement = async () => {
             await loadUsers();
             JobView.renderUserList(userList);
-            document.getElementById('adminModal').classList.add('active');
+            const modal = document.getElementById('adminModal');
+            if (modal) modal.classList.add('active');
         };
 
         const addNewPersonal = async () => {
             const input = document.getElementById('newPersonalInput');
-            const nombre = input.value.trim();
             const errEl = document.getElementById('personalCreationError');
+            
+            if (!input || !errEl) return;
+            
+            const nombre = input.value.trim();
             
             if (!nombre) { errEl.textContent = 'Ingresa un nombre.'; return; }
             if (personalList.includes(nombre)) { errEl.textContent = 'Este nombre ya existe.'; return; }
@@ -799,7 +846,8 @@
         const showPersonalManagement = async () => {
             await loadPersonalList();
             JobView.renderPersonalManagement(personalList);
-            document.getElementById('personalModal').classList.add('active');
+            const modal = document.getElementById('personalModal');
+            if (modal) modal.classList.add('active');
         };
 
         return { 
@@ -843,13 +891,20 @@
     // Globals
     // ============================================================
     function getFilterValues() {
+        const mesEl = document.getElementById('mesFiltro');
+        const anoEl = document.getElementById('anoFiltro');
+        const estadoEl = document.getElementById('estadoFiltro');
+        const busquedaEl = document.getElementById('busqueda');
+        const categoriaEl = document.getElementById('categoriaFiltro');
+        const personalEl = document.getElementById('personalFiltro');
+        
         return {
-            mes:       document.getElementById('mesFiltro').value,
-            ano:       document.getElementById('anoFiltro').value,
-            estado:    document.getElementById('estadoFiltro').value,
-            busqueda:  document.getElementById('busqueda').value,
-            categoria: document.getElementById('categoriaFiltro').value,
-            personal:  document.getElementById('personalFiltro').value
+            mes:       mesEl ? mesEl.value : 'todos',
+            ano:       anoEl ? anoEl.value : 'todos',
+            estado:    estadoEl ? estadoEl.value : 'todos',
+            busqueda:  busquedaEl ? busquedaEl.value : '',
+            categoria: categoriaEl ? categoriaEl.value : 'todos',
+            personal:  personalEl ? personalEl.value : 'todos'
         };
     }
 
@@ -858,7 +913,7 @@
         const { mes, ano, estado, busqueda, categoria, personal } = getFilterValues();
         const isAdmin = JobModel.isAdmin();
         
-        log(`Renderizando app - Total trabajos: ${trabajos.length}, Admin: ${isAdmin}`);
+        log('🎨 Renderizando app - Total trabajos en memoria:', trabajos.length, 'Admin:', isAdmin);
         
         const filtrados = trabajos.filter(t => {
             const mesMatch      = mes       === 'todos' || t.mes === parseInt(mes);
@@ -874,16 +929,25 @@
             return mesMatch && anoMatch && estadoMatch && catMatch && personalMatch && busqMatch;
         });
         
-        log(`Trabajos filtrados: ${filtrados.length}`);
+        log(`📋 Trabajos después de filtrar: ${filtrados.length} de ${trabajos.length}`);
         
-        const porDia = filtrados.reduce((acc,t) => { (acc[t.fecha]=acc[t.fecha]||[]).push(t); return acc; }, {});
+        const porDia = filtrados.reduce((acc,t) => { 
+            const fecha = t.fecha || 'Sin fecha';
+            if (!acc[fecha]) acc[fecha] = []; 
+            acc[fecha].push(t); 
+            return acc; 
+        }, {});
+        
+        log('📅 Días con trabajos:', Object.keys(porDia).length);
         
         JobView.renderSummary(JobModel.getSummary(!isAdmin), !isAdmin);
         JobView.renderPersonalCards(JobModel.getPersonalSummary());
         JobView.renderJobs(porDia, isAdmin);
         
         if (isAdmin) {
-            JobView.renderUserSummary(JobModel.getUserSummary());
+            const userSummary = JobModel.getUserSummary();
+            log('👥 Resumen por usuario:', userSummary);
+            JobView.renderUserSummary(userSummary);
         }
     }
 
@@ -914,10 +978,15 @@
     }
 
     function showConfirmModal(title, msg, cb) {
-        document.getElementById('modalTitle').textContent   = title;
-        document.getElementById('modalMessage').textContent = msg;
-        document.getElementById('confirmActionBtn').onclick = cb;
-        document.getElementById('confirmModal').classList.add('active');
+        const titleEl = document.getElementById('modalTitle');
+        const msgEl = document.getElementById('modalMessage');
+        const btnEl = document.getElementById('confirmActionBtn');
+        const modal = document.getElementById('confirmModal');
+        
+        if (titleEl) titleEl.textContent = title;
+        if (msgEl) msgEl.textContent = msg;
+        if (btnEl) btnEl.onclick = cb;
+        if (modal) modal.classList.add('active');
     }
 
     function closeModal(id) { 
@@ -940,52 +1009,68 @@
     function mostrarEstadisticas() {
         const cc = document.getElementById('charts-container');
         const cr = document.getElementById('category-report-container');
-        const visible = cc.style.display !== 'none';
-        cc.style.display = visible ? 'none' : 'grid';
-        cr.style.display = visible ? 'none' : 'grid';
+        const visible = cc && cc.style.display !== 'none';
+        
+        if (cc) cc.style.display = visible ? 'none' : 'grid';
+        if (cr) cr.style.display = visible ? 'none' : 'grid';
         if (visible) return;
 
         const trabajos = JobModel.getTrabajos();
         const monthly  = JobModel.getMonthlyReport();
         const ps       = JobModel.getPersonalSummary();
 
-        const ctx1 = document.getElementById('ingresosChart').getContext('2d');
-        if (window._c1) window._c1.destroy();
-        window._c1 = new Chart(ctx1, {
-            type:'bar',
-            data:{ labels:monthly.map(m=>m.label), datasets:[{ label:'R$', data:monthly.map(m=>m.total), backgroundColor:'#4CAF50', borderRadius:6 }] },
-            options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } }, scales:{ x:{ ticks:{ color:'white' } }, y:{ ticks:{ color:'white' } } } }
-        });
+        const canvas1 = document.getElementById('ingresosChart');
+        if (canvas1) {
+            const ctx1 = canvas1.getContext('2d');
+            if (window._c1) window._c1.destroy();
+            window._c1 = new Chart(ctx1, {
+                type:'bar',
+                data:{ labels:monthly.map(m=>m.label), datasets:[{ label:'R$', data:monthly.map(m=>m.total), backgroundColor:'#4CAF50', borderRadius:6 }] },
+                options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } }, scales:{ x:{ ticks:{ color:'white' } }, y:{ ticks:{ color:'white' } } } }
+            });
+        }
 
         const pagados = trabajos.filter(t=>t.pagado).length;
-        const ctx2 = document.getElementById('estadosChart').getContext('2d');
-        if (window._c2) window._c2.destroy();
-        window._c2 = new Chart(ctx2, {
-            type:'doughnut',
-            data:{ labels:['Pagados','Pendientes'], datasets:[{ data:[pagados, trabajos.length-pagados], backgroundColor:['#4CAF50','#FF4B4B'] }] },
-            options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } } }
-        });
+        const canvas2 = document.getElementById('estadosChart');
+        if (canvas2) {
+            const ctx2 = canvas2.getContext('2d');
+            if (window._c2) window._c2.destroy();
+            window._c2 = new Chart(ctx2, {
+                type:'doughnut',
+                data:{ labels:['Pagados','Pendientes'], datasets:[{ data:[pagados, trabajos.length-pagados], backgroundColor:['#4CAF50','#FF4B4B'] }] },
+                options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } } }
+            });
+        }
 
         const pEntries = Object.entries(ps).filter(([,d])=>d.count>0);
-        const ctx3 = document.getElementById('personalChart').getContext('2d');
-        if (window._c3) window._c3.destroy();
-        window._c3 = new Chart(ctx3, {
-            type:'bar',
-            data:{ labels:pEntries.map(([n])=>n), datasets:[{ label:'R$', data:pEntries.map(([,d])=>d.total.toFixed(2)),
-                backgroundColor:pEntries.map(([n])=>getPersonalColor(n)), borderRadius:6 }] },
-            options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } }, scales:{ x:{ ticks:{ color:'white' } }, y:{ ticks:{ color:'white' } } } }
-        });
+        const canvas3 = document.getElementById('personalChart');
+        if (canvas3) {
+            const ctx3 = canvas3.getContext('2d');
+            if (window._c3) window._c3.destroy();
+            window._c3 = new Chart(ctx3, {
+                type:'bar',
+                data:{ labels:pEntries.map(([n])=>n), datasets:[{ label:'R$', data:pEntries.map(([,d])=>d.total.toFixed(2)),
+                    backgroundColor:pEntries.map(([n])=>getPersonalColor(n)), borderRadius:6 }] },
+                options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } }, scales:{ x:{ ticks:{ color:'white' } }, y:{ ticks:{ color:'white' } } } }
+            });
+        }
 
         const report = JobModel.getCategoryReport();
-        document.getElementById('categoryReportTable').innerHTML =
-            `<thead><tr><th>Categoría</th><th>Servicios</th><th>Ingresos R$</th><th>Ganancia R$</th></tr></thead>
-            <tbody>${report.map(r=>`<tr><td>${r.name}</td><td>${r.count}</td><td>${r.totalIngresos}</td><td>${r.totalGanancia}</td></tr>`).join('')}</tbody>`;
+        const catTable = document.getElementById('categoryReportTable');
+        if (catTable) {
+            catTable.innerHTML =
+                `<thead><tr><th>Categoría</th><th>Servicios</th><th>Ingresos R$</th><th>Ganancia R$</th></tr></thead>
+                <tbody>${report.map(r=>`<tr><td>${r.name}</td><td>${r.count}</td><td>${r.totalIngresos}</td><td>${r.totalGanancia}</td></tr>`).join('')}</tbody>`;
+        }
 
-        document.getElementById('personalReportTable').innerHTML =
-            `<thead><tr><th>Personal</th><th>Servicios</th><th>Total R$</th><th>Pagados</th><th>Pendientes</th></tr></thead>
-            <tbody>${Object.entries(ps).filter(([,d])=>d.count>0).map(([n,d])=>
-                `<tr><td><strong>${n}</strong></td><td>${d.count}</td><td>R$ ${d.total.toFixed(2)}</td><td>${d.pagados}</td><td>${d.count-d.pagados}</td></tr>`
-            ).join('')}</tbody>`;
+        const perTable = document.getElementById('personalReportTable');
+        if (perTable) {
+            perTable.innerHTML =
+                `<thead><tr><th>Personal</th><th>Servicios</th><th>Total R$</th><th>Pagados</th><th>Pendientes</th></tr></thead>
+                <tbody>${Object.entries(ps).filter(([,d])=>d.count>0).map(([n,d])=>
+                    `<tr><td><strong>${n}</strong></td><td>${d.count}</td><td>R$ ${d.total.toFixed(2)}</td><td>${d.pagados}</td><td>${d.count-d.pagados}</td></tr>`
+                ).join('')}</tbody>`;
+        }
     }
 
     function getPersonalColor(nombre) {
@@ -1016,26 +1101,44 @@
     window._removePersonal     = (p) => JobController.removePersonal(p);
 
     window._agregarTrabajo = () => {
-        const trabajo = document.getElementById('trabajo').value.trim();
-        const precio  = parseFloat(document.getElementById('precio').value);
+        const trabajoEl = document.getElementById('trabajo');
+        const precioEl = document.getElementById('precio');
+        const tipoTrabajoEl = document.getElementById('tipoTrabajo');
+        const personalSelectEl = document.getElementById('personalSelect');
+        const clienteEl = document.getElementById('cliente');
+        const pagadoEl = document.getElementById('pagado');
+        const fechaPersonalizadaEl = document.getElementById('fechaPersonalizada');
+        
+        if (!trabajoEl || !precioEl) return;
+        
+        const trabajo = trabajoEl.value.trim();
+        const precio  = parseFloat(precioEl.value);
+        
         if (!trabajo) { JobView.showNotification('Ingresa el detalle del trabajo.', true); return; }
         if (isNaN(precio) || precio < 0) { JobView.showNotification('Precio no válido.', true); return; }
-        const fechaInput = document.getElementById('fechaPersonalizada').value;
+        
+        const fechaInput = fechaPersonalizadaEl ? fechaPersonalizadaEl.value : '';
         const fechaBase  = fechaInput ? new Date(fechaInput + 'T12:00:00') : new Date();
+        
         const data = {
             trabajo,
-            tipoTrabajo: document.getElementById('tipoTrabajo').value,
-            personal:    document.getElementById('personalSelect').value,
-            cliente:     document.getElementById('cliente').value.trim(),
+            tipoTrabajo: tipoTrabajoEl ? tipoTrabajoEl.value : 'Otros Servicios',
+            personal:    personalSelectEl ? personalSelectEl.value : 'Sin asignar',
+            cliente:     clienteEl ? clienteEl.value.trim() : '',
             precio,
-            pagado:      document.getElementById('pagado').checked,
+            pagado:      pagadoEl ? pagadoEl.checked : false,
             fechaPersonalizada: fechaBase,
             username:    JobModel.getCurrentUser()
         };
+        
         showLoading(true);
         JobModel.addJob(data).then(() => {
-            ['trabajo','precio','cliente','fechaPersonalizada'].forEach(id => document.getElementById(id).value = '');
-            document.getElementById('pagado').checked = false;
+            if (trabajoEl) trabajoEl.value = '';
+            if (precioEl) precioEl.value = '';
+            if (clienteEl) clienteEl.value = '';
+            if (fechaPersonalizadaEl) fechaPersonalizadaEl.value = '';
+            if (pagadoEl) pagadoEl.checked = false;
+            
             renderApp();
             JobView.showNotification(fechaInput
                 ? `Servicio agregado para el ${fechaBase.toLocaleDateString('es-ES')}.`
@@ -1136,10 +1239,12 @@
         try {
             await DB.initAdmin();
             log('✅ App inicializada correctamente');
-            document.getElementById('authModal').classList.add('active');
+            const authModal = document.getElementById('authModal');
+            if (authModal) authModal.classList.add('active');
         } catch(e) {
             error('❌ Error al inicializar:', e);
-            document.getElementById('authError').textContent = 'Error al conectar con Firebase. Verificá la configuración.';
+            const authError = document.getElementById('authError');
+            if (authError) authError.textContent = 'Error al conectar con Firebase. Verificá la configuración.';
         } finally { 
             showLoading(false); 
         }
