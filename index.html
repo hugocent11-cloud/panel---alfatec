@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Asistencia Técnica | Panel de Gestión</title>
+    <title>Alfa | Panel de Gestión - Asistencia Técnica y Venta de Celulares</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
@@ -12,12 +12,11 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
     import {
         getFirestore, collection, doc, setDoc, getDoc, getDocs,
-        deleteDoc, query, where, orderBy
+        deleteDoc, query, where, orderBy, updateDoc, arrayUnion, arrayRemove
     } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
 
     // ============================================================
-    // 🔧 CONFIGURACIÓN FIREBASE — reemplazá estos valores con los
-    //    tuyos desde Firebase Console → Configuración del proyecto
+    // 🔧 CONFIGURACIÓN FIREBASE
     // ============================================================
     const firebaseConfig = {
         apiKey: "AIzaSyAWJ-pPAFPpBsInkVw8Zt3tGm1P6QqJois",
@@ -45,7 +44,6 @@
         },
         async deleteUser(username) {
             await deleteDoc(doc(db, 'users', username));
-            // borrar trabajos del usuario
             const q = query(collection(db, 'jobs'), where('username', '==', username));
             const snap = await getDocs(q);
             const dels = snap.docs.map(d => deleteDoc(d.ref));
@@ -55,6 +53,11 @@
         // TRABAJOS
         async getJobs(username) {
             const q = query(collection(db, 'jobs'), where('username', '==', username), orderBy('timestamp', 'desc'));
+            const snap = await getDocs(q);
+            return snap.docs.map(d => d.data());
+        },
+        async getAllJobs() {
+            const q = query(collection(db, 'jobs'), orderBy('timestamp', 'desc'));
             const snap = await getDocs(q);
             return snap.docs.map(d => d.data());
         },
@@ -71,13 +74,38 @@
             await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
         },
 
+        // CONFIGURACIÓN DE PERSONAL
+        async getPersonalList() {
+            const ref = doc(db, 'config', 'personal');
+            const snap = await getDoc(ref);
+            if (snap.exists()) {
+                return snap.data().nombres || ['Hugo', 'Anderson', 'Richard'];
+            }
+            await setDoc(ref, { nombres: ['Hugo', 'Anderson', 'Richard'] });
+            return ['Hugo', 'Anderson', 'Richard'];
+        },
+        async addPersonal(nombre) {
+            const ref = doc(db, 'config', 'personal');
+            await updateDoc(ref, {
+                nombres: arrayUnion(nombre)
+            });
+        },
+        async removePersonal(nombre) {
+            const ref = doc(db, 'config', 'personal');
+            await updateDoc(ref, {
+                nombres: arrayRemove(nombre)
+            });
+        },
+
         // Inicializar admin si no existe
         async initAdmin() {
             const ref = doc(db, 'users', 'admin');
             const snap = await getDoc(ref);
             if (!snap.exists()) {
-                await setDoc(ref, { username: 'admin', password: 'admin' });
+                await setDoc(ref, { username: 'admin', password: 'admin', isAdmin: true });
             }
+            // Inicializar config de personal
+            await this.getPersonalList();
         }
     };
 
@@ -87,19 +115,28 @@
     const JobModel = (() => {
         let trabajos = [];
         let currentUser = null;
+        let personalList = ['Hugo', 'Anderson', 'Richard'];
         const PORC = 0.05;
-        const PERSONAL_LIST = ['Hugo', 'Anderson', 'Richard'];
 
-        const load = async (username) => {
+        const load = async (username, isAdmin = false) => {
             currentUser = username;
             try {
-                trabajos = await DB.getJobs(username);
+                if (isAdmin) {
+                    trabajos = await DB.getAllJobs();
+                } else {
+                    trabajos = await DB.getJobs(username);
+                }
                 trabajos.forEach(t => {
                     t.cliente     = t.cliente     || '';
                     t.tipoTrabajo = t.tipoTrabajo || 'Otros Servicios';
                     t.personal    = t.personal    || 'Sin asignar';
                 });
             } catch(e) { console.error(e); trabajos = []; }
+        };
+
+        const loadPersonalList = async () => {
+            personalList = await DB.getPersonalList();
+            return personalList;
         };
 
         const addJob = async (data) => {
@@ -119,16 +156,17 @@
                 cliente:      data.cliente,
                 precio:       parseFloat(data.precio),
                 ganancia:     parseFloat((data.precio * PORC).toFixed(2)),
-                pagado:       data.pagado
+                pagado:       data.pagado,
+                username:     data.username || currentUser
             };
             trabajos.unshift(job);
-            await DB.saveJob(job, currentUser);
+            await DB.saveJob(job, job.username);
             return job;
         };
 
-        const deleteJob = async (id) => {
+        const deleteJob = async (id, username) => {
             trabajos = trabajos.filter(t => t.id !== id);
-            await DB.deleteJob(id, currentUser);
+            await DB.deleteJob(id, username);
         };
 
         const clearAll = async () => {
@@ -136,13 +174,16 @@
             await DB.clearJobs(currentUser);
         };
 
-        const updateJobStatus = async (id) => {
+        const updateJobStatus = async (id, username) => {
             const t = trabajos.find(t => t.id === id);
-            if (t) { t.pagado = !t.pagado; await DB.saveJob(t, currentUser); }
+            if (t) { 
+                t.pagado = !t.pagado; 
+                await DB.saveJob(t, username); 
+            }
             return t;
         };
 
-        const updateJobField = async (id, field, value) => {
+        const updateJobField = async (id, field, value, username) => {
             const t = trabajos.find(t => t.id === id);
             if (!t || !['trabajo','cliente','precio','tipoTrabajo','personal'].includes(field)) return false;
             if (field === 'precio') {
@@ -150,21 +191,26 @@
                 if (isNaN(v) || v < 0) return false;
                 t.precio = v; t.ganancia = parseFloat((v * PORC).toFixed(2));
             } else { t[field] = String(value).trim(); }
-            await DB.saveJob(t, currentUser);
+            await DB.saveJob(t, username);
             return true;
         };
 
-        const getSummary = () => {
+        const getSummary = (showGanancia = true) => {
             const total    = trabajos.length;
             const ingresos = trabajos.reduce((s,t) => s + (t.precio||0), 0);
-            const ganancia = trabajos.reduce((s,t) => s + (t.ganancia||0), 0);
+            const ganancia = showGanancia ? trabajos.reduce((s,t) => s + (t.ganancia||0), 0) : 0;
             const pagados  = trabajos.filter(t => t.pagado).length;
-            return { totalTrabajos: total, totalIngresos: ingresos.toFixed(2), totalGanancia: ganancia.toFixed(2), estadoPagos:`${pagados}/${total - pagados}` };
+            return { 
+                totalTrabajos: total, 
+                totalIngresos: ingresos.toFixed(2), 
+                totalGanancia: ganancia.toFixed(2), 
+                estadoPagos: `${pagados}/${total - pagados}` 
+            };
         };
 
         const getPersonalSummary = () => {
             const res = {};
-            PERSONAL_LIST.forEach(p => { res[p] = { count:0, total:0, pagados:0 }; });
+            personalList.forEach(p => { res[p] = { count:0, total:0, pagados:0 }; });
             trabajos.forEach(t => {
                 const p = t.personal || 'Sin asignar';
                 if (!res[p]) res[p] = { count:0, total:0, pagados:0 };
@@ -196,11 +242,23 @@
             return Object.entries(r).sort((a,b) => a[0].localeCompare(b[0])).map(([,v]) => v);
         };
 
+        const getUserSummary = () => {
+            const res = {};
+            trabajos.forEach(t => {
+                const u = t.username || 'unknown';
+                if (!res[u]) res[u] = { count:0, total:0, pagados:0 };
+                res[u].count++;
+                res[u].total += (t.precio||0);
+                if (t.pagado) res[u].pagados++;
+            });
+            return res;
+        };
+
         return {
-            load, getTrabajos: () => [...trabajos], addJob, deleteJob, clearAll,
+            load, loadPersonalList, getTrabajos: () => [...trabajos], addJob, deleteJob, clearAll,
             updateJobStatus, getSummary, updateJobField, getCategoryReport,
             getMonthlyReport, getPersonalSummary, getCurrentUser: () => currentUser,
-            getPersonalList: () => [...PERSONAL_LIST]
+            getPersonalList: () => [...personalList], getUserSummary
         };
     })();
 
@@ -208,14 +266,40 @@
     // JobView
     // ============================================================
     const JobView = (() => {
-        const renderSummary = (s) => {
+        const renderSummary = (s, showGanancia = true) => {
             document.getElementById('total-trabajos').textContent = s.totalTrabajos;
             document.getElementById('total-ingresos').textContent = s.totalIngresos;
-            document.getElementById('total-ganancia').textContent = s.totalGanancia;
+            document.getElementById('total-ganancia').textContent = showGanancia ? s.totalGanancia : 'N/A';
             document.getElementById('estado-pagos').textContent   = s.estadoPagos;
+            
+            // Ocultar/mostrar label de ganancia según corresponda
+            const labelGanancia = document.querySelector('.summary-card:nth-child(3) h3');
+            if (labelGanancia) {
+                labelGanancia.textContent = showGanancia ? '5% Ganancia (R$)' : 'Ganancia';
+            }
         };
 
-        const COLORS = { Hugo:'#40c9ff', Anderson:'#e81cff', Richard:'#00C853', 'Sin asignar':'#888' };
+        const COLORS = { 
+            Hugo:'#4CAF50', 
+            Anderson:'#8BC34A', 
+            Richard:'#CDDC39', 
+            'Sin asignar':'#888',
+            // Colores adicionales para más personal
+            'Personal4': '#FF9800',
+            'Personal5': '#2196F3',
+            'Personal6': '#9C27B0'
+        };
+
+        const getPersonalColor = (nombre) => {
+            if (COLORS[nombre]) return COLORS[nombre];
+            // Generar color basado en el nombre
+            let hash = 0;
+            for (let i = 0; i < nombre.length; i++) {
+                hash = nombre.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+            return '#' + '00000'.substring(0, 6 - c.length) + c;
+        };
 
         const renderPersonalCards = (summary) => {
             const container = document.getElementById('personal-cards-container');
@@ -224,7 +308,7 @@
             Object.entries(summary).forEach(([nombre, data]) => {
                 if (data.count === 0) return;
                 anyData = true;
-                const color = COLORS[nombre] || '#aaa';
+                const color = getPersonalColor(nombre);
                 const card = document.createElement('div');
                 card.className = 'personal-card';
                 card.style.borderLeftColor = color;
@@ -237,7 +321,7 @@
             if (!anyData) container.innerHTML = '<div style="opacity:0.5;font-size:0.85rem;">Sin servicios aún.</div>';
         };
 
-        const renderJobs = (porDia) => {
+        const renderJobs = (porDia, isAdmin = false) => {
             const container = document.getElementById('trabajos-container');
             container.innerHTML = '';
             const dias = Object.keys(porDia).sort((a,b) => {
@@ -260,40 +344,63 @@
                     </div>
                     <table>
                         <thead><tr>
+                            ${isAdmin ? '<th>Usuario</th>' : ''}
                             <th>Hora</th><th>Detalle</th><th>Tipo</th>
                             <th>Personal</th><th>Cliente</th><th>Precio R$</th>
-                            <th>Ganancia R$</th><th>Estado</th><th>Acciones</th>
+                            ${isAdmin ? '<th>Ganancia R$</th>' : ''}
+                            <th>Estado</th><th>Acciones</th>
                         </tr></thead>
                         <tbody>
                         ${lista.map(t => `
                             <tr>
+                                ${isAdmin ? `<td data-label="Usuario"><span class="badge badge-user">${t.username||'—'}</span></td>` : ''}
                                 <td data-label="Hora">
                                     ${t.hora||''}
                                     ${t.retroactivo ? '<span class="badge badge-retro" title="Cargado retroactivamente">📌 retro</span>' : ''}
                                 </td>
                                 <td data-label="Detalle" class="editable-cell" contenteditable="true"
-                                    onblur="window._updateField(${t.id},'trabajo',this.textContent)">${t.trabajo}</td>
+                                    onblur="window._updateField(${t.id},'trabajo',this.textContent, '${t.username}')">${t.trabajo}</td>
                                 <td data-label="Tipo">${t.tipoTrabajo||''}</td>
                                 <td data-label="Personal"><span class="badge badge-personal">${t.personal||'—'}</span></td>
                                 <td data-label="Cliente" class="editable-cell" contenteditable="true"
-                                    onblur="window._updateField(${t.id},'cliente',this.textContent)">${t.cliente||''}</td>
+                                    onblur="window._updateField(${t.id},'cliente',this.textContent, '${t.username}')">${t.cliente||''}</td>
                                 <td data-label="Precio R$" class="editable-cell" contenteditable="true"
-                                    onblur="window._updateField(${t.id},'precio',this.textContent)">${t.precio||0}</td>
-                                <td data-label="Ganancia R$">${t.ganancia||0}</td>
+                                    onblur="window._updateField(${t.id},'precio',this.textContent, '${t.username}')">${t.precio||0}</td>
+                                ${isAdmin ? `<td data-label="Ganancia R$">${t.ganancia||0}</td>` : ''}
                                 <td data-label="Estado">
                                     <span class="badge ${t.pagado?'badge-paid':'badge-pending'}">
                                         ${t.pagado?'✅ Pagado':'⏳ Pendiente'}
                                     </span>
                                 </td>
                                 <td data-label="Acciones">
-                                    <button class="tbl-btn" onclick="window._togglePago(${t.id})">${t.pagado?'↩ Revertir':'💰 Cobrar'}</button>
-                                    <button class="tbl-btn danger" onclick="window._confirmDelete(${t.id})">🗑</button>
+                                    <button class="tbl-btn" onclick="window._togglePago(${t.id}, '${t.username}')">${t.pagado?'↩ Revertir':'💰 Cobrar'}</button>
+                                    <button class="tbl-btn danger" onclick="window._confirmDelete(${t.id}, '${t.username}')">🗑</button>
                                 </td>
                             </tr>`).join('')}
                         </tbody>
                     </table>`;
                 container.appendChild(div);
             });
+        };
+
+        const renderUserSummary = (summary) => {
+            const container = document.getElementById('user-summary-container');
+            if (!container) return;
+            container.innerHTML = '';
+            let anyData = false;
+            Object.entries(summary).forEach(([user, data]) => {
+                if (data.count === 0) return;
+                anyData = true;
+                const card = document.createElement('div');
+                card.className = 'summary-card';
+                card.innerHTML = `
+                    <h3>👤 ${user}</h3>
+                    <p>${data.count} servicios</p>
+                    <small>R$ ${data.total.toFixed(2)} · ${data.pagados} pagados</small>
+                `;
+                container.appendChild(card);
+            });
+            if (!anyData) container.innerHTML = '<div style="opacity:0.5;font-size:0.85rem;">Sin datos de usuarios.</div>';
         };
 
         const showNotification = (msg, isError = false) => {
@@ -309,11 +416,26 @@
             ul.innerHTML = '';
             users.forEach(u => {
                 const li = document.createElement('li');
-                li.innerHTML = `<span>👤 ${u.username}</span>
+                li.innerHTML = `<span>👤 ${u.username} ${u.isAdmin ? '<span class="badge badge-admin">Admin</span>' : ''}</span>
                     ${u.username !== 'admin'
                         ? `<button onclick="window._confirmDeleteUser('${u.username}')">Eliminar</button>`
                         : '<span style="opacity:0.4;font-size:11px;">Admin</span>'}`;
                 ul.appendChild(li);
+            });
+        };
+
+        const renderPersonalManagement = (personalList) => {
+            const container = document.getElementById('personalManagementList');
+            if (!container) return;
+            container.innerHTML = '';
+            personalList.forEach(p => {
+                const div = document.createElement('div');
+                div.className = 'personal-item';
+                div.innerHTML = `
+                    <span>${p}</span>
+                    <button onclick="window._removePersonal('${p}')" class="btn-small danger">Eliminar</button>
+                `;
+                container.appendChild(div);
             });
         };
 
@@ -327,7 +449,11 @@
         };
         const renderCurrentUserName = (name) => { document.getElementById('currentUserName').textContent = name; };
 
-        return { renderSummary, renderPersonalCards, renderJobs, showNotification, renderUserList, hideAuthModal, showAuthModal, renderCurrentUserName };
+        return { 
+            renderSummary, renderPersonalCards, renderJobs, showNotification, renderUserList, 
+            hideAuthModal, showAuthModal, renderCurrentUserName, renderUserSummary,
+            renderPersonalManagement
+        };
     })();
 
     // ============================================================
@@ -335,10 +461,17 @@
     // ============================================================
     const JobController = (() => {
         let userList = [];
+        let personalList = ['Hugo', 'Anderson', 'Richard'];
+        let isAdmin = false;
 
         const loadUsers = async () => {
             try { userList = await DB.getUsers(); }
             catch(e) { userList = []; }
+        };
+
+        const loadPersonalList = async () => {
+            personalList = await JobModel.loadPersonalList();
+            return personalList;
         };
 
         const handleLogin = async () => {
@@ -351,10 +484,21 @@
                 const found = userList.find(u => u.username === user && u.password === pass);
                 if (found) {
                     localStorage.setItem('lastUser_fb', found.username);
+                    isAdmin = found.isAdmin === true;
                     JobView.hideAuthModal();
                     JobView.renderCurrentUserName(found.username);
-                    if (found.username === 'admin') document.getElementById('admin-btn').style.display = 'inline-block';
-                    await JobModel.load(found.username);
+                    
+                    if (found.username === 'admin') {
+                        document.getElementById('admin-btn').style.display = 'inline-block';
+                        document.getElementById('section-personal').style.display = 'none';
+                    } else {
+                        document.getElementById('admin-btn').style.display = 'none';
+                        document.getElementById('section-personal').style.display = 'block';
+                        await loadPersonalList();
+                        updatePersonalSelect(personalList);
+                    }
+                    
+                    await JobModel.load(found.username, isAdmin);
                     initFilters();
                     renderApp();
                 } else {
@@ -372,7 +516,7 @@
             const errEl = document.getElementById('userCreationError');
             if (!user || !pass) { errEl.textContent = 'Usuario y contraseña requeridos.'; return; }
             if (userList.some(u => u.username === user)) { errEl.textContent = 'El usuario ya existe.'; return; }
-            await DB.saveUser({ username: user, password: pass });
+            await DB.saveUser({ username: user, password: pass, isAdmin: false });
             await loadUsers();
             JobView.renderUserList(userList);
             document.getElementById('newUserInput').value = '';
@@ -401,8 +545,94 @@
             document.getElementById('adminModal').classList.add('active');
         };
 
-        return { handleLogin, createNewUser, confirmDeleteUser, deleteUser, showUserManagement };
+        const addNewPersonal = async () => {
+            const input = document.getElementById('newPersonalInput');
+            const nombre = input.value.trim();
+            const errEl = document.getElementById('personalCreationError');
+            
+            if (!nombre) { errEl.textContent = 'Ingresa un nombre.'; return; }
+            if (personalList.includes(nombre)) { errEl.textContent = 'Este nombre ya existe.'; return; }
+            
+            try {
+                await DB.addPersonal(nombre);
+                personalList.push(nombre);
+                updatePersonalSelect(personalList);
+                JobView.renderPersonalManagement(personalList);
+                input.value = '';
+                errEl.style.color = 'var(--color-success)';
+                errEl.textContent = 'Personal agregado exitosamente.';
+                setTimeout(() => { errEl.textContent = ''; errEl.style.color = 'var(--color-error)'; }, 3000);
+            } catch(e) {
+                errEl.textContent = 'Error al agregar personal.';
+                console.error(e);
+            }
+        };
+
+        const removePersonal = async (nombre) => {
+            if (nombre === 'Hugo' || nombre === 'Anderson' || nombre === 'Richard') {
+                JobView.showNotification('No se pueden eliminar los usuarios predeterminados.', true);
+                return;
+            }
+            
+            showConfirmModal(`¿Eliminar "${nombre}"?`, 'Se eliminará de la lista de personal.', async () => {
+                try {
+                    await DB.removePersonal(nombre);
+                    personalList = personalList.filter(p => p !== nombre);
+                    updatePersonalSelect(personalList);
+                    JobView.renderPersonalManagement(personalList);
+                    closeModal('confirmModal');
+                    JobView.showNotification('Personal eliminado.');
+                } catch(e) {
+                    JobView.showNotification('Error al eliminar personal.', true);
+                    console.error(e);
+                }
+            });
+        };
+
+        const showPersonalManagement = async () => {
+            await loadPersonalList();
+            JobView.renderPersonalManagement(personalList);
+            document.getElementById('personalModal').classList.add('active');
+        };
+
+        return { 
+            handleLogin, createNewUser, confirmDeleteUser, deleteUser, showUserManagement,
+            addNewPersonal, removePersonal, showPersonalManagement, isAdmin: () => isAdmin
+        };
     })();
+
+    // ============================================================
+    // Funciones auxiliares
+    // ============================================================
+    function updatePersonalSelect(personalList) {
+        const select = document.getElementById('personalSelect');
+        const filtroSelect = document.getElementById('personalFiltro');
+        
+        // Guardar selección actual
+        const currentVal = select.value;
+        const currentFiltro = filtroSelect.value;
+        
+        // Limpiar opciones
+        select.innerHTML = '';
+        filtroSelect.innerHTML = '<option value="todos">Todo el personal</option>';
+        
+        // Agregar nuevas opciones
+        personalList.forEach(p => {
+            const opt1 = document.createElement('option');
+            opt1.value = p;
+            opt1.textContent = p;
+            select.appendChild(opt1);
+            
+            const opt2 = document.createElement('option');
+            opt2.value = p;
+            opt2.textContent = p;
+            filtroSelect.appendChild(opt2);
+        });
+        
+        // Restaurar selección si es posible
+        if (personalList.includes(currentVal)) select.value = currentVal;
+        if (personalList.includes(currentFiltro)) filtroSelect.value = currentFiltro;
+    }
 
     // ============================================================
     // Globals (expuestos a onclick en HTML)
@@ -421,6 +651,8 @@
     function renderApp() {
         const trabajos = JobModel.getTrabajos();
         const { mes, ano, estado, busqueda, categoria, personal } = getFilterValues();
+        const isAdmin = JobController.isAdmin();
+        
         const filtrados = trabajos.filter(t => {
             const mesMatch      = mes       === 'todos' || t.mes === parseInt(mes);
             const anoMatch      = ano       === 'todos' || t.ano === parseInt(ano);
@@ -430,13 +662,22 @@
             const busqMatch     = !busqueda.trim() ||
                 t.trabajo.toLowerCase().includes(busqueda.toLowerCase()) ||
                 (t.cliente||'').toLowerCase().includes(busqueda.toLowerCase()) ||
-                (t.personal||'').toLowerCase().includes(busqueda.toLowerCase());
+                (t.personal||'').toLowerCase().includes(busqueda.toLowerCase()) ||
+                (t.username||'').toLowerCase().includes(busqueda.toLowerCase());
             return mesMatch && anoMatch && estadoMatch && catMatch && personalMatch && busqMatch;
         });
+        
         const porDia = filtrados.reduce((acc,t) => { (acc[t.fecha]=acc[t.fecha]||[]).push(t); return acc; }, {});
-        JobView.renderSummary(JobModel.getSummary());
+        
+        // Admin no ve el 5% de ganancia
+        JobView.renderSummary(JobModel.getSummary(!isAdmin), !isAdmin);
         JobView.renderPersonalCards(JobModel.getPersonalSummary());
-        JobView.renderJobs(porDia);
+        JobView.renderJobs(porDia, isAdmin);
+        
+        // Si es admin, mostrar resumen por usuario
+        if (isAdmin) {
+            JobView.renderUserSummary(JobModel.getUserSummary());
+        }
     }
 
     function initFilters() {
@@ -468,8 +709,8 @@
     function exportarCSV() {
         const trabajos = JobModel.getTrabajos();
         if (!trabajos.length) { JobView.showNotification('No hay datos para exportar.', true); return; }
-        const headers = ['Fecha','Hora','Detalle','Tipo','Personal','Cliente','Precio','Ganancia','Pagado','Retroactivo'];
-        const rows = trabajos.map(t => [t.fecha,t.hora,t.trabajo,t.tipoTrabajo,t.personal,t.cliente,t.precio,t.ganancia,t.pagado?'Sí':'No',t.retroactivo?'Sí':'No']);
+        const headers = ['Fecha','Hora','Usuario','Detalle','Tipo','Personal','Cliente','Precio','Ganancia','Pagado','Retroactivo'];
+        const rows = trabajos.map(t => [t.fecha,t.hora,t.username||'',t.trabajo,t.tipoTrabajo,t.personal,t.cliente,t.precio,t.ganancia,t.pagado?'Sí':'No',t.retroactivo?'Sí':'No']);
         const csv = [headers,...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([csv], { type:'text/csv;charset=utf-8;' }));
@@ -493,7 +734,7 @@
         if (window._c1) window._c1.destroy();
         window._c1 = new Chart(ctx1, {
             type:'bar',
-            data:{ labels:monthly.map(m=>m.label), datasets:[{ label:'R$', data:monthly.map(m=>m.total), backgroundColor:'#40c9ff', borderRadius:6 }] },
+            data:{ labels:monthly.map(m=>m.label), datasets:[{ label:'R$', data:monthly.map(m=>m.total), backgroundColor:'#4CAF50', borderRadius:6 }] },
             options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } }, scales:{ x:{ ticks:{ color:'white' } }, y:{ ticks:{ color:'white' } } } }
         });
 
@@ -502,7 +743,7 @@
         if (window._c2) window._c2.destroy();
         window._c2 = new Chart(ctx2, {
             type:'doughnut',
-            data:{ labels:['Pagados','Pendientes'], datasets:[{ data:[pagados, trabajos.length-pagados], backgroundColor:['#00C853','#FF4B4B'] }] },
+            data:{ labels:['Pagados','Pendientes'], datasets:[{ data:[pagados, trabajos.length-pagados], backgroundColor:['#4CAF50','#FF4B4B'] }] },
             options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } } }
         });
 
@@ -512,7 +753,7 @@
         window._c3 = new Chart(ctx3, {
             type:'bar',
             data:{ labels:pEntries.map(([n])=>n), datasets:[{ label:'R$', data:pEntries.map(([,d])=>d.total.toFixed(2)),
-                backgroundColor:pEntries.map(([n])=>({Hugo:'#40c9ff',Anderson:'#e81cff',Richard:'#00C853'}[n]||'#888')), borderRadius:6 }] },
+                backgroundColor:pEntries.map(([n])=>getPersonalColor(n)), borderRadius:6 }] },
             options:{ responsive:true, plugins:{ legend:{ labels:{ color:'white' } } }, scales:{ x:{ ticks:{ color:'white' } }, y:{ ticks:{ color:'white' } } } }
         });
 
@@ -528,6 +769,20 @@
             ).join('')}</tbody>`;
     }
 
+    function getPersonalColor(nombre) {
+        const COLORS = { 
+            Hugo:'#4CAF50', Anderson:'#8BC34A', Richard:'#CDDC39',
+            'Sin asignar':'#888'
+        };
+        if (COLORS[nombre]) return COLORS[nombre];
+        let hash = 0;
+        for (let i = 0; i < nombre.length; i++) {
+            hash = nombre.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+        return '#' + '00000'.substring(0, 6 - c.length) + c;
+    }
+
     // Exponer funciones al scope global para los onclick del HTML
     window._handleLogin        = () => JobController.handleLogin();
     window._cerrarSesion       = () => { localStorage.removeItem('lastUser_fb'); location.reload(); };
@@ -537,6 +792,9 @@
     window._confirmDeleteUser  = (u) => JobController.confirmDeleteUser(u);
     window._exportarCSV        = () => exportarCSV();
     window._mostrarEstadisticas = () => mostrarEstadisticas();
+    window._showPersonalMgmt   = () => JobController.showPersonalManagement();
+    window._addNewPersonal     = () => JobController.addNewPersonal();
+    window._removePersonal     = (p) => JobController.removePersonal(p);
 
     window._agregarTrabajo = () => {
         const trabajo = document.getElementById('trabajo').value.trim();
@@ -552,7 +810,8 @@
             cliente:     document.getElementById('cliente').value.trim(),
             precio,
             pagado:      document.getElementById('pagado').checked,
-            fechaPersonalizada: fechaBase
+            fechaPersonalizada: fechaBase,
+            username:    JobModel.getCurrentUser()
         };
         showLoading(true);
         JobModel.addJob(data).then(() => {
@@ -576,15 +835,15 @@
         });
     };
 
-    window._togglePago = async (id) => {
-        await JobModel.updateJobStatus(id);
+    window._togglePago = async (id, username) => {
+        await JobModel.updateJobStatus(id, username);
         renderApp();
     };
 
-    window._confirmDelete = (id) => {
+    window._confirmDelete = (id, username) => {
         showConfirmModal('¿Borrar servicio?', 'Esta acción no se puede deshacer.', async () => {
             showLoading(true);
-            await JobModel.deleteJob(id);
+            await JobModel.deleteJob(id, username);
             closeModal('confirmModal');
             renderApp();
             JobView.showNotification('Servicio eliminado.');
@@ -592,8 +851,8 @@
         });
     };
 
-    window._updateField = async (id, field, value) => {
-        const ok = await JobModel.updateJobField(id, field, value);
+    window._updateField = async (id, field, value, username) => {
+        const ok = await JobModel.updateJobField(id, field, value, username);
         if (ok) { renderApp(); JobView.showNotification('Actualizado.'); }
         else JobView.showNotification('Error al actualizar.', true);
     };
@@ -620,12 +879,15 @@
 
     <style>
         :root {
-            --primary: #40c9ff;
-            --secondary: #e81cff;
+            --primary: #4CAF50;
+            --primary-dark: #388E3C;
+            --primary-light: #8BC34A;
+            --secondary: #66BB6A;
+            --accent: #CDDC39;
             --bg-dark: rgba(15, 32, 39, 0.95);
-            --bg-card: rgba(255, 255, 255, 0.1);
+            --bg-card: rgba(76, 175, 80, 0.1);
             --bg-light-table: rgba(32, 58, 67, 0.6);
-            --color-success: #00C853;
+            --color-success: #4CAF50;
             --color-error: #FF4B4B;
             --color-warning: #ff8f00;
         }
@@ -633,27 +895,40 @@
         body {
             font-family: 'Inter', system-ui, sans-serif;
             margin: 0; padding: 30px;
-            background: linear-gradient(135deg, var(--secondary), var(--primary));
+            background: linear-gradient(135deg, #2E7D32 0%, #4CAF50 50%, #8BC34A 100%);
             color: white; min-height: 100vh;
             -webkit-font-smoothing: antialiased;
         }
         .container { max-width: 1300px; margin: 0 auto; opacity: 0; transition: opacity 0.5s; }
         .container.show { opacity: 1; }
         h1, h2, h3 { font-weight: 700; text-shadow: 0 2px 4px rgba(0,0,0,0.2); margin: 0 0 16px; }
-        h1 { font-size: 2.2rem; margin-bottom: 24px; }
+        h1 { font-size: 2.2rem; margin-bottom: 24px; display: flex; align-items: center; gap: 15px; }
         h2 { font-size: 1.5rem; margin-top: 32px; border-bottom: 2px solid rgba(255,255,255,0.2); padding-bottom: 8px; }
         h3 { font-size: 1.1rem; margin: 0 0 8px; }
+        .logo { 
+            width: 60px; 
+            height: 60px; 
+            background: white; 
+            border-radius: 12px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center;
+            font-size: 2rem;
+            font-weight: bold;
+            color: #4CAF50;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
         .card { background: var(--bg-card); backdrop-filter: blur(10px); border-radius: 14px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); transition: all 0.3s ease; }
         .card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.15); }
         .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 24px; }
         .summary-card { background: var(--bg-dark); border-radius: 12px; padding: 20px; text-align: center; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
-        .summary-card h3 { font-size: 0.8rem; color: var(--primary); text-shadow: none; margin-bottom: 4px; opacity: 0.9; }
+        .summary-card h3 { font-size: 0.8rem; color: var(--primary-light); text-shadow: none; margin-bottom: 4px; opacity: 0.9; }
         .summary-card p { font-size: 1.7rem; font-weight: 700; margin: 0; line-height: 1.2; }
         .personal-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 24px; }
         .personal-card { background: var(--bg-dark); border-radius: 12px; padding: 16px 20px; border-left: 4px solid var(--primary); display: flex; flex-direction: column; gap: 4px; }
         .personal-card .nombre { font-weight: 700; font-size: 1rem; }
         .personal-card .stats { font-size: 0.82rem; opacity: 0.8; }
-        .personal-card .monto { font-size: 1.2rem; font-weight: 700; color: var(--primary); }
+        .personal-card .monto { font-size: 1.2rem; font-weight: 700; color: var(--primary-light); }
         .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 14px; }
         label { display: block; margin-bottom: 4px; font-weight: 500; font-size: 0.88rem; opacity: 0.85; }
         input:not([type="checkbox"]), select { padding: 11px 14px; border-radius: 8px; border: none; background: rgba(255,255,255,0.18); color: white; font-size: 15px; width: 100%; transition: all 0.3s ease; appearance: none; }
@@ -662,8 +937,8 @@
         input:focus, select:focus { outline: none; background: rgba(255,255,255,0.28); box-shadow: 0 0 0 2px var(--primary); }
         input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
         .button-group { display: flex; gap: 12px; margin: 20px 0; flex-wrap: wrap; }
-        .button { position: relative; padding: 11px 22px; background-color: #000; color: white; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.3s ease; }
-        .button::before { content: ''; position: absolute; inset: 0; left: -2px; top: -1px; margin: auto; width: calc(100% + 4px); height: calc(100% + 2px); border-radius: 10px; background: linear-gradient(-45deg, var(--secondary) 0%, var(--primary) 100%); z-index: -10; pointer-events: none; transition: all 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .button { position: relative; padding: 11px 22px; background-color: #2E7D32; color: white; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.3s ease; }
+        .button::before { content: ''; position: absolute; inset: 0; left: -2px; top: -1px; margin: auto; width: calc(100% + 4px); height: calc(100% + 2px); border-radius: 10px; background: linear-gradient(-45deg, var(--primary) 0%, var(--primary-light) 100%); z-index: -10; pointer-events: none; transition: all 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
         .button:hover::before { transform: rotate(5deg); }
         .button:active { transform: scale(0.97); }
         table { width: 100%; border-collapse: collapse; margin-top: 12px; background: var(--bg-light-table); border-radius: 10px; overflow: hidden; }
@@ -672,10 +947,12 @@
         .day-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 10px 15px; background: var(--bg-dark); border-radius: 8px; }
         .day-total { font-size: 0.9rem; opacity: 0.8; }
         .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; }
-        .badge-paid { background: rgba(0,200,83,0.2); color: var(--color-success); }
+        .badge-paid { background: rgba(76,200,80,0.2); color: var(--color-success); }
         .badge-pending { background: rgba(255,75,75,0.2); color: var(--color-error); }
         .badge-retro { background: rgba(255,143,0,0.22); color: #ffb74d; font-size: 10px; }
-        .badge-personal { background: rgba(64,201,255,0.18); color: var(--primary); }
+        .badge-personal { background: rgba(76,201,80,0.18); color: var(--primary-light); }
+        .badge-user { background: rgba(102,187,106,0.2); color: var(--secondary); }
+        .badge-admin { background: rgba(255,143,0,0.25); color: var(--color-warning); margin-left: 8px; }
         .editable-cell { cursor: text; min-width: 70px; }
         .editable-cell:focus { outline: 2px solid var(--primary); background: rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 4px; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.88); z-index: 1000; justify-content: center; align-items: center; }
@@ -702,9 +979,32 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         /* Config banner */
         #config-banner { display:none; background:rgba(255,143,0,0.15); border:1px solid var(--color-warning); border-radius:10px; padding:14px 18px; margin-bottom:20px; font-size:0.88rem; line-height:1.6; }
+        /* Personal management */
+        .personal-item { 
+            background: rgba(255,255,255,0.08); 
+            padding: 10px 14px; 
+            border-radius: 6px; 
+            margin-bottom: 8px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            font-size: 0.88rem; 
+        }
+        .btn-small { 
+            padding: 4px 10px; 
+            font-size: 11px; 
+            color: white; 
+            border: none; 
+            border-radius: 5px; 
+            cursor: pointer; 
+            background: var(--primary);
+        }
+        .btn-small.danger { background: var(--color-error); }
+        #user-summary-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 24px; }
         @media (max-width: 768px) {
             body { padding: 12px; }
-            h1 { font-size: 1.5rem; }
+            h1 { font-size: 1.5rem; flex-direction: column; align-items: flex-start; }
+            .logo { width: 40px; height: 40px; font-size: 1.5rem; }
             .form-grid { grid-template-columns: 1fr !important; gap: 10px; }
             .button-group { flex-direction: column; gap: 8px; }
             .button { width: 100%; padding: 13px; font-size: 14px; }
@@ -728,7 +1028,14 @@
 </div>
 
 <div class="container" id="main-app-container">
-    <h1>🔧 Asistencia Técnica | <span id="currentUserName">—</span></h1>
+    <h1>
+        <div class="logo">A</div>
+        <div>
+            <div style="font-size: 1.8rem;">Alfa</div>
+            <div style="font-size: 0.7rem; opacity: 0.8; font-weight: 400;">Asistencia técnica y venta de celulares</div>
+        </div>
+        <span style="margin-left: auto; font-size: 1rem; opacity: 0.8;">| <span id="currentUserName">—</span></span>
+    </h1>
 
     <!-- Banner si falta configurar Firebase -->
     <div id="config-banner">
@@ -741,6 +1048,8 @@
         <div class="summary-card"><h3>5% Ganancia (R$)</h3><p id="total-ganancia">0.00</p></div>
         <div class="summary-card"><h3>Pagado / Pendiente</h3><p id="estado-pagos">0/0</p></div>
     </div>
+
+    <div id="user-summary-container" style="display:none;"></div>
 
     <div class="section-label">👥 Rendimiento por personal</div>
     <div class="personal-cards" id="personal-cards-container"></div>
@@ -781,10 +1090,11 @@
             </div>
         </div>
         <div class="button-group">
-            <button class="button" onclick="window._agregarTrabajo()" style="background-color:#5d50c6;">✅ Registrar</button>
-            <button class="button" onclick="window._confirmarBorrarTodo()" style="background-color:#5d50c6;">🗑 Borrar Todo</button>
+            <button class="button" onclick="window._agregarTrabajo()" style="background-color:#2E7D32;">✅ Registrar</button>
+            <button class="button" onclick="window._confirmarBorrarTodo()" style="background-color:#2E7D32;">🗑 Borrar Todo</button>
             <button class="button" onclick="window._exportarCSV()">📤 Exportar CSV</button>
             <button class="button" onclick="window._mostrarEstadisticas()">📊 Ver Reportes</button>
+            <button class="button" onclick="window._showPersonalMgmt()" id="section-personal" style="background-color:#66BB6A;">👥 Gestionar Personal</button>
             <button class="button" onclick="window._showUserMgmt()" id="admin-btn" style="display:none;background-color:var(--color-warning);">⚙️ Usuarios</button>
             <button class="button" onclick="window._cerrarSesion()" style="background-color:#ff4d4d;">🚪 Salir</button>
         </div>
@@ -829,7 +1139,7 @@
                     <option value="Otros Servicios">Otros Servicios</option>
                 </select>
             </div>
-            <div><label>Buscar:</label><input type="text" id="busqueda" placeholder="Trabajo, cliente, personal..."/></div>
+            <div><label>Buscar:</label><input type="text" id="busqueda" placeholder="Trabajo, cliente, personal, usuario..."/></div>
         </div>
     </div>
 
@@ -878,6 +1188,27 @@
         <h3>Perfiles existentes</h3>
         <ul id="userList"></ul>
         <div class="modal-buttons"><button class="button" onclick="window._closeModal('adminModal')">Cerrar</button></div>
+    </div>
+</div>
+
+<!-- Modal GESTIONAR PERSONAL -->
+<div id="personalModal" class="modal">
+    <div class="modal-content" style="max-width:580px;">
+        <h2>👥 Gestión de Personal</h2>
+        <p style="opacity:0.7;font-size:0.88rem;">Agregá o eliminá miembros del equipo.</p>
+        <div style="margin-bottom:20px;">
+            <h3>Agregar nuevo miembro</h3>
+            <div class="form-grid" style="grid-template-columns:1fr;">
+                <div><label>Nombre:</label><input type="text" id="newPersonalInput" placeholder="Nombre del miembro"></div>
+            </div>
+            <div style="color:var(--color-error);min-height:18px;font-size:0.88rem;" id="personalCreationError"></div>
+            <div class="modal-buttons" style="justify-content:center;">
+                <button class="button" onclick="window._addNewPersonal()">Agregar Personal</button>
+            </div>
+        </div>
+        <h3>Personal registrado</h3>
+        <div id="personalManagementList"></div>
+        <div class="modal-buttons"><button class="button" onclick="window._closeModal('personalModal')">Cerrar</button></div>
     </div>
 </div>
 
