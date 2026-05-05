@@ -7,12 +7,11 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    <!-- ✅ Firebase SDK -->
     <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
     import {
         getFirestore, collection, doc, setDoc, getDoc, getDocs,
-        deleteDoc, query, where, orderBy, updateDoc, arrayUnion, arrayRemove
+        deleteDoc, query, where, orderBy, updateDoc, arrayUnion, arrayRemove, addDoc
     } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
 
     // ============================================================
@@ -31,81 +30,175 @@
     const db  = getFirestore(app);
 
     // ============================================================
+    // 🔍 DEBUG
+    // ============================================================
+    const DEBUG = true;
+    const log = (...args) => { if (DEBUG) console.log('[ALFA]', ...args); };
+    const error = (...args) => { if (DEBUG) console.error('[ALFA ERROR]', ...args); };
+
+    // ============================================================
     // DB — capa de acceso a Firestore
     // ============================================================
     const DB = {
-        // USUARIOS
         async getUsers() {
-            const snap = await getDocs(collection(db, 'users'));
-            return snap.docs.map(d => d.data());
+            try {
+                const snap = await getDocs(collection(db, 'users'));
+                const users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                log('✅ Usuarios cargados:', users.length);
+                return users;
+            } catch (e) {
+                error('❌ Error al cargar usuarios:', e);
+                return [];
+            }
         },
+        
         async saveUser(user) {
-            await setDoc(doc(db, 'users', user.username), user);
+            try {
+                await setDoc(doc(db, 'users', user.username), user);
+                log('✅ Usuario guardado:', user.username);
+            } catch (e) {
+                error('❌ Error al guardar usuario:', e);
+                throw e;
+            }
         },
+        
         async deleteUser(username) {
-            await deleteDoc(doc(db, 'users', username));
-            const q = query(collection(db, 'jobs'), where('username', '==', username));
-            const snap = await getDocs(q);
-            const dels = snap.docs.map(d => deleteDoc(d.ref));
-            await Promise.all(dels);
+            try {
+                await deleteDoc(doc(db, 'users', username));
+                const q = query(collection(db, 'jobs'), where('username', '==', username));
+                const snap = await getDocs(q);
+                const dels = snap.docs.map(d => deleteDoc(d.ref));
+                await Promise.all(dels);
+                log('✅ Usuario y trabajos eliminados:', username);
+            } catch (e) {
+                error('❌ Error al eliminar usuario:', e);
+                throw e;
+            }
         },
 
-        // TRABAJOS
+        // TRABAJOS - SIN orderBy para evitar índices compuestos
         async getJobs(username) {
-            const q = query(collection(db, 'jobs'), where('username', '==', username), orderBy('timestamp', 'desc'));
-            const snap = await getDocs(q);
-            return snap.docs.map(d => d.data());
+            try {
+                const q = query(collection(db, 'jobs'), where('username', '==', username));
+                const snap = await getDocs(q);
+                const jobs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                // Ordenar manualmente por timestamp
+                jobs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                log(`✅ Trabajos cargados para ${username}:`, jobs.length);
+                return jobs;
+            } catch (e) {
+                error(`❌ Error al cargar trabajos de ${username}:`, e);
+                return [];
+            }
         },
+        
         async getAllJobs() {
-            const q = query(collection(db, 'jobs'), orderBy('timestamp', 'desc'));
-            const snap = await getDocs(q);
-            return snap.docs.map(d => d.data());
+            try {
+                const snap = await getDocs(collection(db, 'jobs'));
+                const jobs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                // Ordenar manualmente por timestamp
+                jobs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                log('✅ Todos los trabajos cargados (admin):', jobs.length);
+                return jobs;
+            } catch (e) {
+                error('❌ Error al cargar todos los trabajos:', e);
+                return [];
+            }
         },
+        
         async saveJob(job, username) {
-            const id = String(job.id);
-            await setDoc(doc(db, 'jobs', `${username}_${id}`), { ...job, username });
+            try {
+                const id = String(job.id);
+                const docRef = doc(db, 'jobs', `${username}_${id}`);
+                await setDoc(docRef, { ...job, username });
+                log('✅ Trabajo guardado:', `${username}_${id}`);
+                return true;
+            } catch (e) {
+                error('❌ Error al guardar trabajo:', e);
+                throw e;
+            }
         },
+        
         async deleteJob(id, username) {
-            await deleteDoc(doc(db, 'jobs', `${username}_${id}`));
+            try {
+                await deleteDoc(doc(db, 'jobs', `${username}_${id}`));
+                log('✅ Trabajo eliminado:', `${username}_${id}`);
+            } catch (e) {
+                error('❌ Error al eliminar trabajo:', e);
+                throw e;
+            }
         },
+        
         async clearJobs(username) {
-            const q = query(collection(db, 'jobs'), where('username', '==', username));
-            const snap = await getDocs(q);
-            await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+            try {
+                const q = query(collection(db, 'jobs'), where('username', '==', username));
+                const snap = await getDocs(q);
+                await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+                log('✅ Todos los trabajos eliminados para:', username);
+            } catch (e) {
+                error('❌ Error al borrar todos los trabajos:', e);
+                throw e;
+            }
         },
 
         // CONFIGURACIÓN DE PERSONAL
         async getPersonalList() {
-            const ref = doc(db, 'config', 'personal');
-            const snap = await getDoc(ref);
-            if (snap.exists()) {
-                return snap.data().nombres || ['Hugo', 'Anderson', 'Richard'];
+            try {
+                const ref = doc(db, 'config', 'personal');
+                const snap = await getDoc(ref);
+                if (snap.exists()) {
+                    const nombres = snap.data().nombres || ['Hugo', 'Anderson', 'Richard'];
+                    log('✅ Lista de personal cargada:', nombres);
+                    return nombres;
+                }
+                // Crear por defecto
+                await setDoc(ref, { nombres: ['Hugo', 'Anderson', 'Richard'] });
+                return ['Hugo', 'Anderson', 'Richard'];
+            } catch (e) {
+                error('❌ Error al cargar personal:', e);
+                return ['Hugo', 'Anderson', 'Richard'];
             }
-            await setDoc(ref, { nombres: ['Hugo', 'Anderson', 'Richard'] });
-            return ['Hugo', 'Anderson', 'Richard'];
         },
+        
         async addPersonal(nombre) {
-            const ref = doc(db, 'config', 'personal');
-            await updateDoc(ref, {
-                nombres: arrayUnion(nombre)
-            });
+            try {
+                const ref = doc(db, 'config', 'personal');
+                await updateDoc(ref, {
+                    nombres: arrayUnion(nombre)
+                });
+                log('✅ Personal agregado:', nombre);
+            } catch (e) {
+                error('❌ Error al agregar personal:', e);
+                throw e;
+            }
         },
+        
         async removePersonal(nombre) {
-            const ref = doc(db, 'config', 'personal');
-            await updateDoc(ref, {
-                nombres: arrayRemove(nombre)
-            });
+            try {
+                const ref = doc(db, 'config', 'personal');
+                await updateDoc(ref, {
+                    nombres: arrayRemove(nombre)
+                });
+                log('✅ Personal eliminado:', nombre);
+            } catch (e) {
+                error('❌ Error al eliminar personal:', e);
+                throw e;
+            }
         },
 
-        // Inicializar admin si no existe
         async initAdmin() {
-            const ref = doc(db, 'users', 'admin');
-            const snap = await getDoc(ref);
-            if (!snap.exists()) {
-                await setDoc(ref, { username: 'admin', password: 'admin', isAdmin: true });
+            try {
+                const ref = doc(db, 'users', 'admin');
+                const snap = await getDoc(ref);
+                if (!snap.exists()) {
+                    await setDoc(ref, { username: 'admin', password: 'admin', isAdmin: true });
+                    log('✅ Admin creado por defecto');
+                }
+                await this.getPersonalList();
+            } catch (e) {
+                error('❌ Error al inicializar admin:', e);
+                throw e;
             }
-            // Inicializar config de personal
-            await this.getPersonalList();
         }
     };
 
@@ -116,22 +209,35 @@
         let trabajos = [];
         let currentUser = null;
         let personalList = ['Hugo', 'Anderson', 'Richard'];
+        let currentIsAdmin = false;
         const PORC = 0.05;
 
         const load = async (username, isAdmin = false) => {
             currentUser = username;
+            currentIsAdmin = isAdmin;
+            log('Cargando trabajos para:', username, 'Admin:', isAdmin);
+            
             try {
                 if (isAdmin) {
+                    log('Modo ADMIN: cargando TODOS los trabajos');
                     trabajos = await DB.getAllJobs();
                 } else {
+                    log('Modo USUARIO: cargando trabajos propios');
                     trabajos = await DB.getJobs(username);
                 }
+                
                 trabajos.forEach(t => {
                     t.cliente     = t.cliente     || '';
                     t.tipoTrabajo = t.tipoTrabajo || 'Otros Servicios';
                     t.personal    = t.personal    || 'Sin asignar';
+                    t.username    = t.username    || username;
                 });
-            } catch(e) { console.error(e); trabajos = []; }
+                
+                log(`✅ ${trabajos.length} trabajos cargados en memoria`);
+            } catch(e) { 
+                error('❌ Error en load:', e); 
+                trabajos = []; 
+            }
         };
 
         const loadPersonalList = async () => {
@@ -159,19 +265,41 @@
                 pagado:       data.pagado,
                 username:     data.username || currentUser
             };
-            trabajos.unshift(job);
-            await DB.saveJob(job, job.username);
-            return job;
+            
+            log('Creando nuevo trabajo:', job);
+            
+            try {
+                trabajos.unshift(job);
+                await DB.saveJob(job, job.username);
+                log('✅ Trabajo agregado y guardado');
+                return job;
+            } catch (e) {
+                error('❌ Error en addJob:', e);
+                trabajos = trabajos.filter(t => t.id !== job.id);
+                throw e;
+            }
         };
 
         const deleteJob = async (id, username) => {
-            trabajos = trabajos.filter(t => t.id !== id);
-            await DB.deleteJob(id, username);
+            try {
+                trabajos = trabajos.filter(t => t.id !== id);
+                await DB.deleteJob(id, username);
+                log('✅ Trabajo eliminado:', id);
+            } catch (e) {
+                error('❌ Error en deleteJob:', e);
+                throw e;
+            }
         };
 
         const clearAll = async () => {
-            trabajos = [];
-            await DB.clearJobs(currentUser);
+            try {
+                trabajos = [];
+                await DB.clearJobs(currentUser);
+                log('✅ Todos los trabajos eliminados');
+            } catch (e) {
+                error('❌ Error en clearAll:', e);
+                throw e;
+            }
         };
 
         const updateJobStatus = async (id, username) => {
@@ -179,20 +307,69 @@
             if (t) { 
                 t.pagado = !t.pagado; 
                 await DB.saveJob(t, username); 
+                log('✅ Estado de pago actualizado:', id, t.pagado);
             }
             return t;
         };
 
         const updateJobField = async (id, field, value, username) => {
             const t = trabajos.find(t => t.id === id);
-            if (!t || !['trabajo','cliente','precio','tipoTrabajo','personal'].includes(field)) return false;
+            if (!t || !['trabajo','cliente','precio','tipoTrabajo','personal'].includes(field)) {
+                error('Campo inválido o trabajo no encontrado');
+                return false;
+            }
+            
             if (field === 'precio') {
                 const v = parseFloat(value);
                 if (isNaN(v) || v < 0) return false;
-                t.precio = v; t.ganancia = parseFloat((v * PORC).toFixed(2));
-            } else { t[field] = String(value).trim(); }
+                t.precio = v; 
+                t.ganancia = parseFloat((v * PORC).toFixed(2));
+            } else { 
+                t[field] = String(value).trim(); 
+            }
+            
             await DB.saveJob(t, username);
+            log('✅ Campo actualizado:', field, value);
             return true;
+        };
+
+        const editJob = async (id, newData, username) => {
+            const t = trabajos.find(t => t.id === id);
+            if (!t) {
+                error('Trabajo no encontrado:', id);
+                return false;
+            }
+            
+            log('Editando trabajo:', { id, newData });
+            
+            const allowedFields = ['trabajo', 'cliente', 'precio', 'tipoTrabajo', 'personal', 'pagado'];
+            let changed = false;
+            
+            for (const [key, value] of Object.entries(newData)) {
+                if (allowedFields.includes(key)) {
+                    if (key === 'precio') {
+                        const v = parseFloat(value);
+                        if (!isNaN(v) && v >= 0) {
+                            t.precio = v;
+                            t.ganancia = parseFloat((v * PORC).toFixed(2));
+                            changed = true;
+                        }
+                    } else if (key === 'pagado') {
+                        t.pagado = Boolean(value);
+                        changed = true;
+                    } else {
+                        t[key] = String(value).trim();
+                        changed = true;
+                    }
+                }
+            }
+            
+            if (changed) {
+                await DB.saveJob(t, username);
+                log('✅ Trabajo editado:', id);
+                return true;
+            }
+            return false;
         };
 
         const getSummary = (showGanancia = true) => {
@@ -258,7 +435,8 @@
             load, loadPersonalList, getTrabajos: () => [...trabajos], addJob, deleteJob, clearAll,
             updateJobStatus, getSummary, updateJobField, getCategoryReport,
             getMonthlyReport, getPersonalSummary, getCurrentUser: () => currentUser,
-            getPersonalList: () => [...personalList], getUserSummary
+            getPersonalList: () => [...personalList], getUserSummary, editJob,
+            isAdmin: () => currentIsAdmin
         };
     })();
 
@@ -272,7 +450,6 @@
             document.getElementById('total-ganancia').textContent = showGanancia ? s.totalGanancia : 'N/A';
             document.getElementById('estado-pagos').textContent   = s.estadoPagos;
             
-            // Ocultar/mostrar label de ganancia según corresponda
             const labelGanancia = document.querySelector('.summary-card:nth-child(3) h3');
             if (labelGanancia) {
                 labelGanancia.textContent = showGanancia ? '5% Ganancia (R$)' : 'Ganancia';
@@ -283,16 +460,11 @@
             Hugo:'#4CAF50', 
             Anderson:'#8BC34A', 
             Richard:'#CDDC39', 
-            'Sin asignar':'#888',
-            // Colores adicionales para más personal
-            'Personal4': '#FF9800',
-            'Personal5': '#2196F3',
-            'Personal6': '#9C27B0'
+            'Sin asignar':'#888'
         };
 
         const getPersonalColor = (nombre) => {
             if (COLORS[nombre]) return COLORS[nombre];
-            // Generar color basado en el nombre
             let hash = 0;
             for (let i = 0; i < nombre.length; i++) {
                 hash = nombre.charCodeAt(i) + ((hash << 5) - hash);
@@ -303,6 +475,7 @@
 
         const renderPersonalCards = (summary) => {
             const container = document.getElementById('personal-cards-container');
+            if (!container) return;
             container.innerHTML = '';
             let anyData = false;
             Object.entries(summary).forEach(([nombre, data]) => {
@@ -323,15 +496,21 @@
 
         const renderJobs = (porDia, isAdmin = false) => {
             const container = document.getElementById('trabajos-container');
+            if (!container) return;
             container.innerHTML = '';
+            
             const dias = Object.keys(porDia).sort((a,b) => {
                 const toD = s => { const [d,m,y] = s.split('/'); return new Date(y,m-1,d); };
                 return toD(b) - toD(a);
             });
+            
             if (!dias.length) {
                 container.innerHTML = '<div class="card" style="text-align:center;opacity:0.6;">Sin servicios para mostrar.</div>';
                 return;
             }
+            
+            log(`Renderizando ${dias.length} días con trabajos`);
+            
             dias.forEach(dia => {
                 const lista = porDia[dia];
                 const totalDia = lista.reduce((s,t) => s+(t.precio||0),0).toFixed(2);
@@ -373,8 +552,9 @@
                                     </span>
                                 </td>
                                 <td data-label="Acciones">
+                                    <button class="tbl-btn" onclick="window._editarTrabajo(${t.id}, '${t.username}')" title="Editar">✏️</button>
                                     <button class="tbl-btn" onclick="window._togglePago(${t.id}, '${t.username}')">${t.pagado?'↩ Revertir':'💰 Cobrar'}</button>
-                                    <button class="tbl-btn danger" onclick="window._confirmDelete(${t.id}, '${t.username}')">🗑</button>
+                                    <button class="tbl-btn danger" onclick="window._confirmDelete(${t.id}, '${t.username}')" title="Eliminar">🗑</button>
                                 </td>
                             </tr>`).join('')}
                         </tbody>
@@ -387,6 +567,7 @@
             const container = document.getElementById('user-summary-container');
             if (!container) return;
             container.innerHTML = '';
+            container.style.display = 'grid';
             let anyData = false;
             Object.entries(summary).forEach(([user, data]) => {
                 if (data.count === 0) return;
@@ -400,11 +581,14 @@
                 `;
                 container.appendChild(card);
             });
-            if (!anyData) container.innerHTML = '<div style="opacity:0.5;font-size:0.85rem;">Sin datos de usuarios.</div>';
+            if (!anyData) {
+                container.style.display = 'none';
+            }
         };
 
         const showNotification = (msg, isError = false) => {
             const el = document.getElementById('notification');
+            if (!el) return;
             el.style.background = isError ? 'var(--color-error)' : 'var(--color-success)';
             document.getElementById('notificationText').textContent = msg;
             el.style.display = 'block';
@@ -413,6 +597,7 @@
 
         const renderUserList = (users) => {
             const ul = document.getElementById('userList');
+            if (!ul) return;
             ul.innerHTML = '';
             users.forEach(u => {
                 const li = document.createElement('li');
@@ -443,11 +628,16 @@
             document.getElementById('authModal').classList.remove('active');
             document.getElementById('main-app-container').classList.add('show');
         };
+        
         const showAuthModal = (error = false) => {
             document.getElementById('authModal').classList.add('active');
             document.getElementById('authError').textContent = error ? 'Usuario o contraseña incorrectos.' : '';
         };
-        const renderCurrentUserName = (name) => { document.getElementById('currentUserName').textContent = name; };
+        
+        const renderCurrentUserName = (name) => { 
+            const el = document.getElementById('currentUserName');
+            if (el) el.textContent = name; 
+        };
 
         return { 
             renderSummary, renderPersonalCards, renderJobs, showNotification, renderUserList, 
@@ -465,8 +655,11 @@
         let isAdmin = false;
 
         const loadUsers = async () => {
-            try { userList = await DB.getUsers(); }
-            catch(e) { userList = []; }
+            try { 
+                userList = await DB.getUsers(); 
+            } catch(e) { 
+                userList = []; 
+            }
         };
 
         const loadPersonalList = async () => {
@@ -479,23 +672,34 @@
             const pass = document.getElementById('passwordInput').value.trim();
             document.getElementById('authError').textContent = '';
             showLoading(true);
+            
             try {
                 await loadUsers();
                 const found = userList.find(u => u.username === user && u.password === pass);
+                
                 if (found) {
                     localStorage.setItem('lastUser_fb', found.username);
                     isAdmin = found.isAdmin === true;
+                    
+                    log('✅ Login exitoso:', { user: found.username, isAdmin });
+                    
                     JobView.hideAuthModal();
                     JobView.renderCurrentUserName(found.username);
                     
+                    // Controlar visibilidad de botones según rol
+                    const adminBtn = document.getElementById('admin-btn');
+                    const personalBtn = document.getElementById('section-personal');
+                    
                     if (found.username === 'admin') {
-                        document.getElementById('admin-btn').style.display = 'inline-block';
-                        document.getElementById('section-personal').style.display = 'none';
+                        if (adminBtn) adminBtn.style.display = 'inline-block';
+                        if (personalBtn) personalBtn.style.display = 'none';
+                        log('🔐 Usuario ADMIN logueado');
                     } else {
-                        document.getElementById('admin-btn').style.display = 'none';
-                        document.getElementById('section-personal').style.display = 'block';
+                        if (adminBtn) adminBtn.style.display = 'none';
+                        if (personalBtn) personalBtn.style.display = 'inline-block';
                         await loadPersonalList();
                         updatePersonalSelect(personalList);
+                        log('👤 Usuario normal logueado:', found.username);
                     }
                     
                     await JobModel.load(found.username, isAdmin);
@@ -503,11 +707,14 @@
                     renderApp();
                 } else {
                     JobView.showAuthModal(true);
+                    error('❌ Credenciales inválidas para:', user);
                 }
             } catch(e) {
+                error('❌ Error en login:', e);
                 document.getElementById('authError').textContent = 'Error de conexión con Firebase.';
-                console.error(e);
-            } finally { showLoading(false); }
+            } finally { 
+                showLoading(false); 
+            }
         };
 
         const createNewUser = async () => {
@@ -564,7 +771,7 @@
                 setTimeout(() => { errEl.textContent = ''; errEl.style.color = 'var(--color-error)'; }, 3000);
             } catch(e) {
                 errEl.textContent = 'Error al agregar personal.';
-                console.error(e);
+                error(e);
             }
         };
 
@@ -584,7 +791,7 @@
                     JobView.showNotification('Personal eliminado.');
                 } catch(e) {
                     JobView.showNotification('Error al eliminar personal.', true);
-                    console.error(e);
+                    error(e);
                 }
             });
         };
@@ -608,15 +815,14 @@
         const select = document.getElementById('personalSelect');
         const filtroSelect = document.getElementById('personalFiltro');
         
-        // Guardar selección actual
+        if (!select || !filtroSelect) return;
+        
         const currentVal = select.value;
         const currentFiltro = filtroSelect.value;
         
-        // Limpiar opciones
         select.innerHTML = '';
         filtroSelect.innerHTML = '<option value="todos">Todo el personal</option>';
         
-        // Agregar nuevas opciones
         personalList.forEach(p => {
             const opt1 = document.createElement('option');
             opt1.value = p;
@@ -629,13 +835,12 @@
             filtroSelect.appendChild(opt2);
         });
         
-        // Restaurar selección si es posible
         if (personalList.includes(currentVal)) select.value = currentVal;
         if (personalList.includes(currentFiltro)) filtroSelect.value = currentFiltro;
     }
 
     // ============================================================
-    // Globals (expuestos a onclick en HTML)
+    // Globals
     // ============================================================
     function getFilterValues() {
         return {
@@ -651,7 +856,9 @@
     function renderApp() {
         const trabajos = JobModel.getTrabajos();
         const { mes, ano, estado, busqueda, categoria, personal } = getFilterValues();
-        const isAdmin = JobController.isAdmin();
+        const isAdmin = JobModel.isAdmin();
+        
+        log(`Renderizando app - Total trabajos: ${trabajos.length}, Admin: ${isAdmin}`);
         
         const filtrados = trabajos.filter(t => {
             const mesMatch      = mes       === 'todos' || t.mes === parseInt(mes);
@@ -667,14 +874,14 @@
             return mesMatch && anoMatch && estadoMatch && catMatch && personalMatch && busqMatch;
         });
         
+        log(`Trabajos filtrados: ${filtrados.length}`);
+        
         const porDia = filtrados.reduce((acc,t) => { (acc[t.fecha]=acc[t.fecha]||[]).push(t); return acc; }, {});
         
-        // Admin no ve el 5% de ganancia
         JobView.renderSummary(JobModel.getSummary(!isAdmin), !isAdmin);
         JobView.renderPersonalCards(JobModel.getPersonalSummary());
         JobView.renderJobs(porDia, isAdmin);
         
-        // Si es admin, mostrar resumen por usuario
         if (isAdmin) {
             JobView.renderUserSummary(JobModel.getUserSummary());
         }
@@ -682,19 +889,28 @@
 
     function initFilters() {
         const anoFiltro = document.getElementById('anoFiltro');
+        if (!anoFiltro) return;
+        
         anoFiltro.innerHTML = '<option value="todos">Todos los años</option>';
         const años = [...new Set(JobModel.getTrabajos().map(t => t.ano))].sort((a,b) => b-a);
         años.forEach(a => {
             const opt = document.createElement('option');
             opt.value = a; opt.textContent = a; anoFiltro.appendChild(opt);
         });
+        
         ['mesFiltro','anoFiltro','estadoFiltro','categoriaFiltro','personalFiltro']
-            .forEach(id => document.getElementById(id).addEventListener('change', renderApp));
-        document.getElementById('busqueda').addEventListener('input', renderApp);
+            .forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.addEventListener('change', renderApp);
+            });
+            
+        const busquedaEl = document.getElementById('busqueda');
+        if (busquedaEl) busquedaEl.addEventListener('input', renderApp);
     }
 
     function showLoading(show) {
-        document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
+        const el = document.getElementById('loading-overlay');
+        if (el) el.style.display = show ? 'flex' : 'none';
     }
 
     function showConfirmModal(title, msg, cb) {
@@ -704,7 +920,10 @@
         document.getElementById('confirmModal').classList.add('active');
     }
 
-    function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+    function closeModal(id) { 
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('active'); 
+    }
 
     function exportarCSV() {
         const trabajos = JobModel.getTrabajos();
@@ -783,7 +1002,7 @@
         return '#' + '00000'.substring(0, 6 - c.length) + c;
     }
 
-    // Exponer funciones al scope global para los onclick del HTML
+    // Exponer funciones
     window._handleLogin        = () => JobController.handleLogin();
     window._cerrarSesion       = () => { localStorage.removeItem('lastUser_fb'); location.reload(); };
     window._closeModal         = (id) => closeModal(id);
@@ -821,6 +1040,9 @@
             JobView.showNotification(fechaInput
                 ? `Servicio agregado para el ${fechaBase.toLocaleDateString('es-ES')}.`
                 : 'Servicio registrado.');
+        }).catch(e => {
+            error('Error al agregar trabajo:', e);
+            JobView.showNotification('Error al guardar. Revisá la consola.', true);
         }).finally(() => showLoading(false));
     };
 
@@ -851,15 +1073,60 @@
         });
     };
 
+    window._editarTrabajo = (id, username) => {
+        const trabajo = JobModel.getTrabajos().find(t => t.id === id);
+        if (!trabajo) return;
+        
+        const nuevoTrabajo = prompt('Detalle del trabajo:', trabajo.trabajo);
+        if (nuevoTrabajo === null) return;
+        
+        const nuevoCliente = prompt('Cliente:', trabajo.cliente || '');
+        if (nuevoCliente === null) return;
+        
+        const nuevoPrecio = prompt('Precio:', trabajo.precio);
+        if (nuevoPrecio === null) return;
+        
+        const precioNum = parseFloat(nuevoPrecio);
+        if (isNaN(precioNum) || precioNum < 0) {
+            JobView.showNotification('Precio inválido', true);
+            return;
+        }
+        
+        showLoading(true);
+        JobModel.editJob(id, {
+            trabajo: nuevoTrabajo,
+            cliente: nuevoCliente,
+            precio: precioNum
+        }, username).then(() => {
+            renderApp();
+            JobView.showNotification('Trabajo actualizado.');
+        }).catch(e => {
+            JobView.showNotification('Error al actualizar', true);
+            error(e);
+        }).finally(() => {
+            showLoading(false);
+        });
+    };
+
     window._updateField = async (id, field, value, username) => {
-        const ok = await JobModel.updateJobField(id, field, value, username);
-        if (ok) { renderApp(); JobView.showNotification('Actualizado.'); }
-        else JobView.showNotification('Error al actualizar.', true);
+        log('Actualizando campo:', { id, field, value, username });
+        
+        const result = await JobModel.updateJobField(id, field, value, username);
+        if (result) { 
+            renderApp(); 
+            JobView.showNotification('Actualizado correctamente.'); 
+        }
+        else {
+            JobView.showNotification('Error al actualizar. Revisá la consola.', true);
+            error('No se pudo actualizar el campo');
+        }
     };
 
     // Enter en login
-    ['passwordInput','userInput'].forEach(id =>
-        document.getElementById(id).addEventListener('keydown', e => { if (e.key==='Enter') window._handleLogin(); }));
+    ['passwordInput','userInput'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('keydown', e => { if (e.key==='Enter') window._handleLogin(); });
+    });
 
     // ============================================================
     // INICIO
@@ -868,11 +1135,14 @@
         showLoading(true);
         try {
             await DB.initAdmin();
+            log('✅ App inicializada correctamente');
             document.getElementById('authModal').classList.add('active');
         } catch(e) {
-            console.error(e);
+            error('❌ Error al inicializar:', e);
             document.getElementById('authError').textContent = 'Error al conectar con Firebase. Verificá la configuración.';
-        } finally { showLoading(false); }
+        } finally { 
+            showLoading(false); 
+        }
     })();
 
     </script>
@@ -973,13 +1243,10 @@
         .tbl-btn:hover { background: rgba(255,255,255,0.22); }
         .tbl-btn.danger { background: rgba(255,75,75,0.25); }
         .tbl-btn.danger:hover { background: rgba(255,75,75,0.45); }
-        /* Loading overlay */
         #loading-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:3000; justify-content:center; align-items:center; flex-direction:column; gap:16px; }
         .spinner { width:44px; height:44px; border:4px solid rgba(255,255,255,0.2); border-top-color:var(--primary); border-radius:50%; animation:spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        /* Config banner */
         #config-banner { display:none; background:rgba(255,143,0,0.15); border:1px solid var(--color-warning); border-radius:10px; padding:14px 18px; margin-bottom:20px; font-size:0.88rem; line-height:1.6; }
-        /* Personal management */
         .personal-item { 
             background: rgba(255,255,255,0.08); 
             padding: 10px 14px; 
@@ -1000,7 +1267,7 @@
             background: var(--primary);
         }
         .btn-small.danger { background: var(--color-error); }
-        #user-summary-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        #user-summary-container { display: none; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin-bottom: 24px; }
         @media (max-width: 768px) {
             body { padding: 12px; }
             h1 { font-size: 1.5rem; flex-direction: column; align-items: flex-start; }
@@ -1021,7 +1288,6 @@
 </head>
 <body>
 
-<!-- Loading overlay -->
 <div id="loading-overlay">
     <div class="spinner"></div>
     <span style="color:white;font-weight:600;">Conectando...</span>
@@ -1037,9 +1303,8 @@
         <span style="margin-left: auto; font-size: 1rem; opacity: 0.8;">| <span id="currentUserName">—</span></span>
     </h1>
 
-    <!-- Banner si falta configurar Firebase -->
     <div id="config-banner">
-        ⚠️ <strong>Falta configurar Firebase.</strong> Abrí el archivo HTML, buscá <code>firebaseConfig</code> y reemplazá los valores con los de tu proyecto Firebase. Seguí las instrucciones del archivo <code>INSTRUCCIONES.txt</code>.
+        ⚠️ <strong>Falta configurar Firebase.</strong> Abrí el archivo HTML, buscá <code>firebaseConfig</code> y reemplazá los valores con los de tu proyecto Firebase.
     </div>
 
     <div class="summary-cards">
@@ -1049,7 +1314,7 @@
         <div class="summary-card"><h3>Pagado / Pendiente</h3><p id="estado-pagos">0/0</p></div>
     </div>
 
-    <div id="user-summary-container" style="display:none;"></div>
+    <div id="user-summary-container"></div>
 
     <div class="section-label">👥 Rendimiento por personal</div>
     <div class="personal-cards" id="personal-cards-container"></div>
